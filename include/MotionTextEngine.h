@@ -26,16 +26,17 @@ typedef struct MTE_Rect {
     int height;
 } MTE_Rect;
 
+/* Kept ABI-compatible with the original 0.1.x configuration. */
 typedef struct MTE_Config {
-    int inpaint_radius;       /* Recommended: 3-7 */
-    int mask_padding;         /* Expand selected text region in pixels */
-    int max_corners;          /* Optical-flow features, e.g. 100 */
-    int min_tracked_points;   /* Re-detect features below this count */
+    int inpaint_radius;
+    int mask_padding;
+    int max_corners;
+    int min_tracked_points;
     int inpaint_method;       /* 0 = TELEA, 1 = Navier-Stokes */
-    int mask_mode;            /* 0 = solid tracked rectangle */
+    int mask_mode;            /* Reserved for compatibility */
 } MTE_Config;
 
-/* Returns nullptr on failure. The first frame must be BGR uint8. */
+/* Create from a BGR frame and initial approximate text region. */
 MTE_API MTE_Handle MTE_CALL MTE_Create(
     const uint8_t* first_frame_bgr,
     int width, int height, int stride,
@@ -43,9 +44,8 @@ MTE_API MTE_Handle MTE_CALL MTE_Create(
     const MTE_Config* config
 );
 
-/* Tracks the selected region and inpaints it in-place.
-   frame_bgr must be writable BGR uint8 with the same dimensions.
-   Returns 0 on success, negative value on error. */
+/* Causal/low-latency processing. The engine uses only the current and previous
+   frames. frame_bgr is modified in-place. */
 MTE_API int MTE_CALL MTE_Process(
     MTE_Handle handle,
     uint8_t* frame_bgr,
@@ -53,7 +53,21 @@ MTE_API int MTE_CALL MTE_Process(
     MTE_Rect* tracked_region
 );
 
-/* Reset tracking using a new frame and region. */
+/* Preferred integration API: provide the character/text mask for this frame.
+   mask is 8-bit single-channel, non-zero pixels are removed. mask_stride is
+   measured in bytes. Pass confidence in [0,1]; low confidence triggers a
+   conservative fallback to tracked-region processing. */
+MTE_API int MTE_CALL MTE_ProcessMask(
+    MTE_Handle handle,
+    uint8_t* frame_bgr,
+    int width, int height, int stride,
+    const uint8_t* mask,
+    int mask_stride,
+    float confidence,
+    MTE_Rect* tracked_region
+);
+
+/* Reset tracking and temporal history using a new frame and region. */
 MTE_API int MTE_CALL MTE_Reset(
     MTE_Handle handle,
     const uint8_t* frame_bgr,

@@ -44,6 +44,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path package/bin, package/python | Out-Null
           Copy-Item build/Release/MotionTextEngine.dll package/bin/
           Copy-Item python/motion_text.py package/python/
+          New-Item -ItemType Directory -Force -Path package/include | Out-Null
+          Copy-Item include/MotionTextEngine.h package/include/
           Copy-Item README.md package/
           Copy-Item LICENSE package/ -ErrorAction SilentlyContinue
 
