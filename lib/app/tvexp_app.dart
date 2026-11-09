@@ -39,7 +39,7 @@ class _TvexpAppState extends State<TvexpApp> {
       debugPrintStack(stackTrace: stack);
     }
 
-    Session? session;
+    dynamic session;
     if (licensed) {
       try {
         session = await SessionStore.instance.read();
