@@ -1,4 +1,4 @@
-name: Build MotionTextEngine DLL
+name: Build MotionTextEngine v0.4.0
 
 on:
   workflow_dispatch:
@@ -7,6 +7,7 @@ on:
     paths:
       - "src/**"
       - "include/**"
+      - "python/**"
       - "CMakeLists.txt"
       - ".github/workflows/build-windows.yml"
 
@@ -14,45 +15,57 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Install OpenCV through vcpkg
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
+          key: vcpkg-${{ runner.os }}-x64-windows-static-md-opencv-v0.3-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-x64-windows-static-md-opencv-v0.3-
+
+      - name: Install OpenCV
         shell: pwsh
         run: |
-          vcpkg install opencv4:x64-windows-static-md
-          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          vcpkg install opencv4:x64-windows-static-md tesseract:x64-windows-static-md
 
       - name: Configure
         shell: pwsh
         run: |
           cmake -S . -B build -A x64 `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL
 
       - name: Build
         run: cmake --build build --config Release --parallel
 
+      - name: Fetch English OCR model
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tessdata | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata" -OutFile "tessdata/eng.traineddata"
+
       - name: Stage package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path package/bin, package/python | Out-Null
-          Copy-Item build/Release/MotionTextEngine.dll package/bin/
-          Copy-Item python/motion_text.py package/python/
-          New-Item -ItemType Directory -Force -Path package/include | Out-Null
-          Copy-Item include/MotionTextEngine.h package/include/
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item build/Release/MotionTextEngine.dll package/
+          Copy-Item build/Release/MotionText.exe package/
+          Copy-Item python/motion_text.py package/
           Copy-Item README.md package/
-          Copy-Item LICENSE package/ -ErrorAction SilentlyContinue
+          Copy-Item LICENSE package/\n          Copy-Item tessdata package/tessdata -Recurse
 
-      - name: Upload DLL artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MotionTextEngine-windows-x64
+          name: MotionTextEngine-v0.4.0-Windows-x64
           path: package/
           if-no-files-found: error
           retention-days: 30

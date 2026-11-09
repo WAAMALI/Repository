@@ -17,66 +17,62 @@
 extern "C" {
 #endif
 
-typedef void* MTE_Handle;
+typedef enum MTE_SourceType {
+    MTE_SOURCE_FILE = 0,
+    MTE_SOURCE_RTSP = 1,
+    MTE_SOURCE_UDP = 2,
+    MTE_SOURCE_CAPTURE_DEVICE = 3
+} MTE_SourceType;
 
-typedef struct MTE_Rect {
-    int x;
-    int y;
-    int width;
-    int height;
-} MTE_Rect;
+typedef enum MTE_Mode {
+    MTE_MODE_LIVE_BALANCED = 0,
+    MTE_MODE_MOVIE_QUALITY = 1
+} MTE_Mode;
 
-/* Kept ABI-compatible with the original 0.1.x configuration. */
+typedef struct MTE_Rect { int x; int y; int width; int height; } MTE_Rect;
+
 typedef struct MTE_Config {
-    int inpaint_radius;
-    int mask_padding;
-    int max_corners;
-    int min_tracked_points;
-    int inpaint_method;       /* 0 = TELEA, 1 = Navier-Stokes */
-    int mask_mode;            /* Reserved for compatibility */
+    int mode;                 /* MTE_Mode */
+    int inpaint_radius;       /* 3..9 recommended */
+    int mask_padding;         /* pixels around tracked box */
+    int max_corners;          /* optical-flow features */
+    int min_tracked_points;   /* feature refresh threshold */
+    int inpaint_method;       /* 0=TELEA, 1=Navier-Stokes */
+    int live_buffer_size;     /* live capture queue hint, normally 1 */
+    int reconnect_attempts;   /* live input reconnect attempts */
+    int reconnect_delay_ms;   /* delay between reconnect attempts */
+    int movie_temporal_radius;/* reserved look-ahead window, 0 disables */
+    int reacquire_search_radius;/* pixels around last box; 0 disables */
+    float reacquire_min_score;  /* template match confidence, recommended 0.55-0.75 */
+    int ocr_interval_frames;
+    int max_instances;
+    int max_absent_seconds;     /* 0 = no expiry */
+    int min_ocr_confidence;
 } MTE_Config;
 
-/* Create from a BGR frame and initial approximate text region. */
-MTE_API MTE_Handle MTE_CALL MTE_Create(
-    const uint8_t* first_frame_bgr,
-    int width, int height, int stride,
-    MTE_Rect initial_region,
-    const MTE_Config* config
-);
+typedef void (MTE_CALL *MTE_ProgressCallback)(int percent, void* user_data);
 
-/* Causal/low-latency processing. The engine uses only the current and previous
-   frames. frame_bgr is modified in-place. */
+/* source:
+   FILE: path to a local file
+   RTSP: rtsp://...
+   UDP:  udp://@239.x.x.x:port or udp://...
+   CAPTURE_DEVICE: decimal camera/capture device index, e.g. "0"
+   output: file path or a backend-supported stream destination.
+   region is selected in pixels on the first decoded frame.
+   Returns 0 on success; negative error code on failure. */
 MTE_API int MTE_CALL MTE_Process(
-    MTE_Handle handle,
-    uint8_t* frame_bgr,
-    int width, int height, int stride,
-    MTE_Rect* tracked_region
+    int source_type,
+    const wchar_t* source,
+    const wchar_t* output,
+    MTE_Rect initial_region,
+    const wchar_t* target_text,
+    const MTE_Config* config,
+    MTE_ProgressCallback progress,
+    void* user_data
 );
 
-/* Preferred integration API: provide the character/text mask for this frame.
-   mask is 8-bit single-channel, non-zero pixels are removed. mask_stride is
-   measured in bytes. Pass confidence in [0,1]; low confidence triggers a
-   conservative fallback to tracked-region processing. */
-MTE_API int MTE_CALL MTE_ProcessMask(
-    MTE_Handle handle,
-    uint8_t* frame_bgr,
-    int width, int height, int stride,
-    const uint8_t* mask,
-    int mask_stride,
-    float confidence,
-    MTE_Rect* tracked_region
-);
-
-/* Reset tracking and temporal history using a new frame and region. */
-MTE_API int MTE_CALL MTE_Reset(
-    MTE_Handle handle,
-    const uint8_t* frame_bgr,
-    int width, int height, int stride,
-    MTE_Rect region
-);
-
-MTE_API void MTE_CALL MTE_Destroy(MTE_Handle handle);
 MTE_API const char* MTE_CALL MTE_Version(void);
+MTE_API const char* MTE_CALL MTE_LastError(void);
 
 #ifdef __cplusplus
 }
