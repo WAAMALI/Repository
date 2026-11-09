@@ -1,0 +1,56 @@
+name: Build MotionTextEngine DLL
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/build-windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install OpenCV through vcpkg
+        shell: pwsh
+        run: |
+          vcpkg install opencv4:x64-windows-static-md
+          "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package/bin, package/python | Out-Null
+          Copy-Item build/Release/MotionTextEngine.dll package/bin/
+          Copy-Item python/motion_text.py package/python/
+          Copy-Item README.md package/
+          Copy-Item LICENSE package/ -ErrorAction SilentlyContinue
+
+      - name: Upload DLL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MotionTextEngine-windows-x64
+          path: package/
+          if-no-files-found: error
+          retention-days: 30
