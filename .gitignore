@@ -1,0 +1,21 @@
+.dart_tool/
+.packages
+.pub-cache/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+.idea/
+*.iml
+android/.gradle/
+android/local.properties
+android/key.properties
+
+# Never commit Android signing credentials.
+*.jks
+*.keystore
+android/key.properties
+
+# Android release signing material
+android/app/*.jks
+android/key.properties

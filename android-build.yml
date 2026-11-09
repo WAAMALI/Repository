@@ -1,0 +1,120 @@
+name: TVEXP Android Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Analyze, test and build Android packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate missing Gradle wrapper
+        run: bash scripts/bootstrap_android.sh
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Configure Android release signing
+        if: github.event_name != 'pull_request'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing GitHub Actions secret: ${name}"
+              exit 1
+            fi
+          done
+
+          mkdir -p android/app
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/tvexp-release-key.jks
+          test -s android/app/tvexp-release-key.jks
+
+          python3 - <<'PYPROPS'
+          import os
+          def escape(value):
+              return (value.replace("\\", "\\\\")
+                           .replace("=", "\\=")
+                           .replace(":", "\\:")
+                           .replace("#", "\\#")
+                           .replace("!", "\\!")
+                           .replace(" ", "\\ "))
+          values = {
+              "storeFile": "app/tvexp-release-key.jks",
+              "storePassword": os.environ["ANDROID_KEYSTORE_PASSWORD"],
+              "keyAlias": os.environ["ANDROID_KEY_ALIAS"],
+              "keyPassword": os.environ["ANDROID_KEY_PASSWORD"],
+          }
+          with open("android/key.properties", "w", encoding="utf-8") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={escape(value)}\n")
+          PYPROPS
+
+      - name: Format Dart source
+        run: dart format lib test
+
+      - name: Static analysis
+        run: flutter analyze --no-fatal-infos
+
+      - name: Run tests
+        run: flutter test --reporter expanded
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Build release Android App Bundle
+        run: flutter build appbundle --release
+
+      - name: Verify release signatures
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          if [[ -z "$APKSIGNER" ]]; then
+            echo "::error::Android apksigner was not found."
+            exit 1
+          fi
+          "$APKSIGNER" verify --verbose --print-certs build/app/outputs/flutter-apk/app-release.apk
+          jarsigner -verify -verbose -certs build/app/outputs/bundle/release/app-release.aab 2>&1 | tee /tmp/aab-signature-check.log
+          if ! grep -qi "jar verified" /tmp/aab-signature-check.log; then
+            echo "::error::AAB signature verification did not report a verified JAR."
+            exit 1
+          fi
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tvexp-android-release-${{ github.run_number }}
+          if-no-files-found: error
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/bundle/release/app-release.aab

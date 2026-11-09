@@ -1,0 +1,6 @@
+# Copy to android/key.properties and replace every placeholder.
+# Never commit android/key.properties or the .jks/.keystore file.
+storeFile=app/tvexp-release-key.jks
+storePassword=REPLACE_WITH_KEYSTORE_PASSWORD
+keyAlias=tvexp
+keyPassword=REPLACE_WITH_KEY_PASSWORD

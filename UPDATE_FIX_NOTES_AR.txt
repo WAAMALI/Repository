@@ -1,0 +1,14 @@
+TVEXP Update Fix 1.0.2
+
+Root-cause fix:
+- Update check is now independent of license/session restoration.
+- If license validation times out or throws, app startup still completes and update check still runs.
+- The updater fetches the latest manifest with cache-busting and no-cache headers.
+- Three network retries and clear diagnostic messages are retained.
+- Android versionCode remains strictly increasing: 20.
+
+Release requirements:
+- Keep the exact same Android signing keystore, alias and passwords as the installed build.
+- Publish Mobile manifest and APK from the same workflow run.
+- Verify latest-mobile.json reports version 1.0.2, versionCode 20, applicationId com.tvexp.iptv.
+- Do not install this APK manually when testing automatic update; open the older installed app.

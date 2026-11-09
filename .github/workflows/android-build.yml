@@ -1,0 +1,473 @@
+
+name: TVEXP Mobile and TV Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Choose which app to build and publish"
+        required: true
+        type: choice
+        options:
+          - mobile
+          - tv
+          - both
+        default: mobile
+
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "mobile-v*"
+      - "tv-v*"
+
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tvexp-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  # ==========================================
+  # 1. TEST SHARED PROJECT
+  # ==========================================
+
+  test:
+    name: Analyze and test shared TVEXP code
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Gradle wrapper if missing
+        run: bash scripts/bootstrap_android.sh
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Format Dart source
+        run: dart format lib test
+
+      - name: Static analysis
+        run: flutter analyze --no-fatal-infos
+
+      - name: Run tests
+        run: flutter test --reporter expanded
+
+
+  # ==========================================
+  # 2. SELECT RELEASE SERVICE
+  # ==========================================
+
+  select-services:
+    name: Select release service
+    needs: test
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/'))
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+
+    steps:
+      - name: Select requested service
+        id: select
+        shell: bash
+
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REQUESTED_SERVICE: ${{ inputs.service }}
+
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            SERVICE="${REQUESTED_SERVICE:-mobile}"
+
+          elif [[ "$REF_NAME" == mobile-v* ]]; then
+            SERVICE="mobile"
+
+          elif [[ "$REF_NAME" == tv-v* ]]; then
+            SERVICE="tv"
+
+          else
+            echo "Unsupported release trigger: $REF_NAME"
+            exit 1
+          fi
+
+          case "$SERVICE" in
+
+            mobile)
+              MATRIX='{"include":[{"flavor":"mobile","service":"Mobile","application_id":"com.tvexp.iptv"}]}'
+              ;;
+
+            tv)
+              MATRIX='{"include":[{"flavor":"tv","service":"TV","application_id":"com.tvexp.iptv.tv"}]}'
+              ;;
+
+            both)
+              MATRIX='{"include":[{"flavor":"mobile","service":"Mobile","application_id":"com.tvexp.iptv"},{"flavor":"tv","service":"TV","application_id":"com.tvexp.iptv.tv"}]}'
+              ;;
+
+            *)
+              echo "Invalid service: $SERVICE"
+              exit 1
+              ;;
+
+          esac
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+
+  # ==========================================
+  # 3. BUILD AND PUBLISH
+  # ==========================================
+
+  build-and-publish:
+    name: Build and publish ${{ matrix.service }}
+
+    needs: select-services
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      # When "both" is selected, publish Mobile first, then Android TV.
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.select-services.outputs.matrix) }}
+
+    steps:
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Gradle wrapper if missing
+        run: bash scripts/bootstrap_android.sh
+
+      - name: Install dependencies
+        run: flutter pub get
+
+
+      # ======================================
+      # ANDROID SIGNING
+      # ======================================
+
+      - name: Prepare shared Android signing key
+        shell: bash
+
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+
+        run: |
+          set -euo pipefail
+
+          test -n "$ANDROID_KEYSTORE_BASE64" || {
+            echo "Missing ANDROID_KEYSTORE_BASE64 secret."
+            exit 1
+          }
+
+          mkdir -p android/app
+
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" |
+            base64 --decode > android/app/tvexp-release-key.jks
+
+          test -s android/app/tvexp-release-key.jks
+
+
+      # ======================================
+      # BUILD SIGNED APK
+      # ======================================
+
+      - name: Build signed APK
+
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/tvexp-release-key.jks
+
+        shell: bash
+
+        run: |
+          set -euo pipefail
+
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+
+          # Build exactly one ABI-specific APK: ARM64 only.
+          # ndk.abiFilters is intentionally absent from android/app/build.gradle.
+          flutter build apk \
+            --release \
+            --flavor "${{ matrix.flavor }}" \
+            --target-platform android-arm64 \
+            --split-per-abi
+      # ======================================
+      # BUILD SIGNED AAB
+      # ======================================
+
+      - name: Build signed AAB
+
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/android/app/tvexp-release-key.jks
+
+        run: |
+          # Keep the App Bundle ARM64-only as well.
+          flutter build appbundle \
+            --release \
+            --flavor "${{ matrix.flavor }}" \
+            --target-platform android-arm64
+
+
+      # ======================================
+      # PREPARE RELEASE FILES
+      # ======================================
+
+      - name: Prepare service-specific release files
+
+        id: release
+        shell: bash
+
+        env:
+          FLAVOR: ${{ matrix.flavor }}
+          SERVICE: ${{ matrix.service }}
+
+        run: |
+          set -euo pipefail
+
+          VERSION_LINE="$(awk '/^version:/ {print $2; exit}' pubspec.yaml)"
+
+          test -n "$VERSION_LINE"
+
+          if [[ "$VERSION_LINE" != *"+"* ]]; then
+            echo "pubspec.yaml version must include a build number."
+            exit 1
+          fi
+
+          VERSION="${VERSION_LINE%%+*}"
+          VERSION_CODE="${VERSION_LINE##*+}"
+
+          [[ "$VERSION_CODE" =~ ^[0-9]+$ ]] || {
+            echo "Invalid Android versionCode: $VERSION_CODE"
+            exit 1
+          }
+
+          OUTPUT_DIR="build/app/outputs/flutter-apk"
+          APK_SOURCE="$OUTPUT_DIR/app-arm64-v8a-${FLAVOR}-release.apk"
+          AAB_SOURCE="build/app/outputs/bundle/${FLAVOR}Release/app-${FLAVOR}-release.aab"
+
+          test -s "$APK_SOURCE" || {
+            echo "ARM64 APK not found: $APK_SOURCE"
+            find "$OUTPUT_DIR" -maxdepth 1 -type f -print
+            exit 1
+          }
+
+          # Validate the actual installable package before publishing it.
+          unzip -t "$APK_SOURCE" >/dev/null
+          ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$ANDROID_SDK"
+          APKSIGNER="$(find "$ANDROID_SDK/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK_SOURCE"
+          APK_ABIS="$(unzip -Z1 "$APK_SOURCE" | grep -E '^lib/[^/]+/[^/]+\.so$' | cut -d/ -f2 | sort -u || true)"
+          if [[ "$APK_ABIS" != "arm64-v8a" ]]; then
+            echo "Unexpected APK ABIs: ${APK_ABIS:-none}"
+            exit 1
+          fi
+          test -s "$AAB_SOURCE"
+
+          APK_NAME="TVEXP-${SERVICE}-${VERSION}-arm64-v8a-${FLAVOR}-release.apk"
+          AAB_NAME="TVEXP-${SERVICE}-${VERSION}.aab"
+          cp "$APK_SOURCE" "$APK_NAME"
+          cp "$AAB_SOURCE" "$AAB_NAME"
+
+          TAG="${FLAVOR}-v${VERSION}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "apk=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "aab=$AAB_NAME" >> "$GITHUB_OUTPUT"
+
+
+      # ======================================
+      # CREATE UPDATE MANIFEST
+      # ======================================
+
+      - name: Create service update manifest
+
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          VERSION_CODE: ${{ steps.release.outputs.version_code }}
+          TAG: ${{ steps.release.outputs.tag }}
+          APK_NAME: ${{ steps.release.outputs.apk }}
+          SERVICE: ${{ matrix.flavor }}
+          APPLICATION_ID: ${{ matrix.application_id }}
+
+        shell: bash
+
+        run: |
+          set -euo pipefail
+
+          cat > "latest-${SERVICE}.json" <<EOF
+          {
+            "service": "${SERVICE}",
+            "platform": "android",
+            "version": "${VERSION}",
+            "versionCode": ${VERSION_CODE},
+            "applicationId": "${APPLICATION_ID}",
+            "apk": "${APK_NAME}",
+            "releaseTag": "${TAG}",
+            "downloadUrl": "https://github.com/${GITHUB_REPOSITORY_OWNER}/tvexp-releases/releases/download/${TAG}/${APK_NAME}"
+          }
+          EOF
+
+
+      # ======================================
+      # PUBLISH SERVICE RELEASE
+      # ======================================
+
+      - name: Publish service release to tvexp-releases
+
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          APK_NAME: ${{ steps.release.outputs.apk }}
+          AAB_NAME: ${{ steps.release.outputs.aab }}
+          SERVICE: ${{ matrix.flavor }}
+
+        shell: bash
+
+        run: |
+          set -euo pipefail
+
+          test -n "$GH_TOKEN" || {
+            echo "Missing RELEASES_TOKEN secret."
+            exit 1
+          }
+
+          RELEASE_REPO="${GITHUB_REPOSITORY_OWNER}/tvexp-releases"
+          # Publish only the two requested release files.
+          ASSETS=("$APK_NAME" "$AAB_NAME")
+
+          if gh release view "$TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" \
+              --repo "$RELEASE_REPO" --clobber
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --repo "$RELEASE_REPO" \
+              --title "TVEXP ${SERVICE} ${VERSION}" \
+              --notes "TVEXP ${SERVICE} Android ARM64 release ${VERSION}. Includes one ARM64 APK and one ARM64-only Android App Bundle."
+          fi
+
+
+      # ======================================
+      # PUBLISH STABLE UPDATE MANIFEST
+      # ======================================
+
+      - name: Publish stable service update manifest
+
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          SERVICE: ${{ matrix.flavor }}
+
+        shell: bash
+
+        run: |
+          set -euo pipefail
+
+          FILE="latest-${SERVICE}.json"
+
+          CONTENT="$(base64 -w 0 "$FILE")"
+
+          API="repos/${GITHUB_REPOSITORY_OWNER}/tvexp-releases/contents/${FILE}"
+
+          SHA="$(gh api "$API" --jq .sha 2>/dev/null || true)"
+
+          if [[ -n "$SHA" ]]; then
+
+            gh api --method PUT "$API" \
+              -f message="Update ${SERVICE} release manifest" \
+              -f content="$CONTENT" \
+              -f sha="$SHA" >/dev/null
+
+          else
+
+            gh api --method PUT "$API" \
+              -f message="Add ${SERVICE} release manifest" \
+              -f content="$CONTENT" >/dev/null
+
+          fi
+
+
+      # ======================================
+      # UPLOAD BUILD ARTIFACTS
+      # ======================================
+
+      - name: Upload service artifacts
+
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: TVEXP-${{ matrix.service }}-${{ steps.release.outputs.version }}
+          if-no-files-found: error
+
+          path: |
+            ${{ steps.release.outputs.apk }}
+            ${{ steps.release.outputs.aab }}
+
+
+      # ======================================
+      # CLEAN UP SIGNING KEY
+      # ======================================
+
+      - name: Remove temporary signing key
+
+        if: always()
+
+        run: |
+          rm -f android/app/tvexp-release-key.jks

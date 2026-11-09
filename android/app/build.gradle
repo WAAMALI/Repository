@@ -1,0 +1,222 @@
+
+import java.util.Properties
+
+plugins {
+    id "com.android.application"
+    id "org.jetbrains.kotlin.android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+// --------------------------------------------------
+// TVEXP Android Release Signing
+// Supports:
+// 1. GitHub Actions environment variables
+// 2. Local android/key.properties
+// --------------------------------------------------
+
+def keystoreProperties = new Properties()
+
+def keystorePropertiesFile = rootProject.file("key.properties")
+
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream {
+        keystoreProperties.load(it)
+    }
+}
+
+// GitHub Actions environment variables
+def envStoreFile = System.getenv("ANDROID_KEYSTORE_PATH")
+def envStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+def envKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+def envKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+
+def envValues = [
+    envStoreFile,
+    envStorePassword,
+    envKeyAlias,
+    envKeyPassword
+]
+
+def anyEnvValue = envValues.any {
+    it != null && !it.trim().isEmpty()
+}
+
+def completeEnvSigning = envValues.every {
+    it != null && !it.trim().isEmpty()
+}
+
+// Prevent incomplete CI signing configuration.
+if (anyEnvValue && !completeEnvSigning) {
+    throw new GradleException(
+        "Incomplete Android signing environment variables. " +
+        "Check all four ANDROID signing variables."
+    )
+}
+
+// Local signing configuration
+def localValues = [
+    keystoreProperties.getProperty("storeFile"),
+    keystoreProperties.getProperty("storePassword"),
+    keystoreProperties.getProperty("keyAlias"),
+    keystoreProperties.getProperty("keyPassword")
+]
+
+def completeLocalSigning = localValues.every {
+    it != null && !it.trim().isEmpty()
+}
+
+// Validate local signing only when CI signing is unavailable.
+if (!completeEnvSigning &&
+    keystorePropertiesFile.exists() &&
+    !completeLocalSigning) {
+
+    throw new GradleException(
+        "Incomplete android/key.properties. " +
+        "Check storeFile, storePassword, keyAlias and keyPassword."
+    )
+}
+
+// Prefer GitHub Actions signing when available.
+def signingConfigured = completeEnvSigning || completeLocalSigning
+
+def releaseStoreFile = completeEnvSigning
+    ? envStoreFile
+    : (completeLocalSigning
+        ? keystoreProperties.getProperty("storeFile")
+        : null)
+
+def releaseStorePassword = completeEnvSigning
+    ? envStorePassword
+    : keystoreProperties.getProperty("storePassword")
+
+def releaseKeyAlias = completeEnvSigning
+    ? envKeyAlias
+    : keystoreProperties.getProperty("keyAlias")
+
+def releaseKeyPassword = completeEnvSigning
+    ? envKeyPassword
+    : keystoreProperties.getProperty("keyPassword")
+
+// Verify the actual keystore file exists.
+if (signingConfigured) {
+
+    def releaseKeystore = completeEnvSigning
+        ? file(releaseStoreFile)
+        : rootProject.file(releaseStoreFile)
+
+    if (!releaseKeystore.exists() || !releaseKeystore.isFile()) {
+        throw new GradleException(
+            "Android release keystore not found: ${releaseKeystore}"
+        )
+    }
+}
+
+android {
+
+    namespace "com.tvexp.iptv"
+
+    compileSdk flutter.compileSdkVersion
+    ndkVersion flutter.ndkVersion
+
+    // Enable BuildConfig for flavor-specific update channels.
+    buildFeatures {
+        buildConfig true
+    }
+
+    defaultConfig {
+
+        applicationId "com.tvexp.iptv"
+
+        minSdk 24
+        targetSdk flutter.targetSdkVersion
+
+        // Keep Android version metadata synchronized with pubspec.yaml.
+        versionCode flutter.versionCode
+        versionName flutter.versionName
+
+    }
+
+    // --------------------------------------------------
+    // Separate Mobile and TV applications
+    // Shared Flutter codebase
+    // --------------------------------------------------
+
+    flavorDimensions "device"
+
+    productFlavors {
+
+        mobile {
+            dimension "device"
+
+            // Preserve existing mobile installation identity.
+            applicationId "com.tvexp.iptv"
+
+            versionNameSuffix "-mobile"
+        }
+
+        tv {
+            dimension "device"
+
+            // Independent TV installation identity.
+            applicationId "com.tvexp.iptv.tv"
+
+            versionNameSuffix "-tv"
+        }
+    }
+
+    // --------------------------------------------------
+    // Release Signing
+    // Same signing key for both applications
+    // --------------------------------------------------
+
+    signingConfigs {
+
+        release {
+
+            if (signingConfigured) {
+
+                storeFile completeEnvSigning
+                    ? file(releaseStoreFile)
+                    : rootProject.file(releaseStoreFile)
+
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+
+        release {
+
+            if (signingConfigured) {
+                signingConfig signingConfigs.release
+            }
+
+            minifyEnabled false
+            shrinkResources false
+        }
+    }
+
+    // --------------------------------------------------
+    // Java and Kotlin
+    // --------------------------------------------------
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+// --------------------------------------------------
+// Flutter
+// --------------------------------------------------
+
+flutter {
+    source "../.."
+}
