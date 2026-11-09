@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS OFF)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc video videoio)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc video videoio photo)
 
 add_library(MotionTextEngine SHARED
     src/MotionTextEngine.cpp
